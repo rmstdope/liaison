@@ -1,6 +1,7 @@
 //! liaison: a signaling server where two browsers meet in a room and swap the messages that set
 //! up a direct WebRTC connection. The protocol is described in README.md.
 
+mod budget;
 mod outpost;
 mod protocol;
 mod room_code;
@@ -29,6 +30,17 @@ pub struct Config {
     pub outpost_url: Option<String>,
     /// How long a new room waits for outpost before it opens without a relay.
     pub outpost_timeout: Duration,
+    /// Relays one client address may be given; beyond that its rooms open without one. Each
+    /// relay is a room on outpost, which opens a limited number for everyone, so this keeps one
+    /// address from using them all up.
+    pub relays_per_address: Rate,
+}
+
+/// A steady rate with room for bursts.
+#[derive(Clone, Copy, Debug)]
+pub struct Rate {
+    pub per_second: f64,
+    pub burst: f64,
 }
 
 impl Default for Config {
@@ -44,6 +56,10 @@ impl Default for Config {
             max_signals: 200,
             outpost_url: Some("http://outpost-web:8081/rooms".to_string()),
             outpost_timeout: Duration::from_secs(1),
+            relays_per_address: Rate {
+                per_second: 0.1,
+                burst: 3.0,
+            },
         }
     }
 }

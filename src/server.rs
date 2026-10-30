@@ -13,6 +13,7 @@ use axum::routing::get;
 use tokio::sync::mpsc::unbounded_channel;
 
 use crate::Config;
+use crate::budget::Budgets;
 use crate::protocol::{ClientMessage, Reason, ServerMessage};
 use crate::rooms::{Outbox, Rooms, Seat};
 
@@ -20,11 +21,13 @@ struct Shared {
     config: Config,
     rooms: Arc<Rooms>,
     connections: Mutex<HashMap<IpAddr, usize>>,
+    relays: Mutex<Budgets>,
 }
 
 pub fn app(config: Config) -> Router {
     let rooms = Arc::new(Rooms::new(config.max_rooms, config.room_lifetime));
     let shared = Shared {
+        relays: Mutex::new(Budgets::new(config.relays_per_address)),
         config,
         rooms,
         connections: Mutex::default(),
@@ -131,9 +134,9 @@ impl Drop for Slot {
     }
 }
 
-async fn connection(mut socket: WebSocket, shared: Arc<Shared>, _slot: Slot) {
+async fn connection(mut socket: WebSocket, shared: Arc<Shared>, slot: Slot) {
     let (outbox, mut queued) = unbounded_channel();
-    let mut state = Connection::default();
+    let mut state = Connection::from(slot.ip);
     loop {
         tokio::select! {
             incoming = socket.recv() => match incoming {
@@ -158,18 +161,40 @@ async fn connection(mut socket: WebSocket, shared: Arc<Shared>, _slot: Slot) {
     let _ = socket.send(Message::Close(None)).await;
 }
 
-/// The relay for a new room, if outpost gives one in time.
-async fn relay(config: &Config) -> Option<serde_json::Value> {
-    let url = config.outpost_url.as_deref()?;
-    crate::outpost::ice_servers(url, config.outpost_timeout).await
+/// The relay for a new room, if the client's address has one left in its budget and outpost
+/// gives one in time.
+async fn relay(shared: &Shared, ip: IpAddr) -> Option<serde_json::Value> {
+    let url = shared.config.outpost_url.as_deref()?;
+    if !shared
+        .relays
+        .lock()
+        .unwrap()
+        .allow(ip, std::time::Instant::now())
+    {
+        tracing::info!("a room opens without a relay: its address has used its relays");
+        return None;
+    }
+    crate::outpost::ice_servers(url, shared.config.outpost_timeout).await
 }
 
 /// What one WebSocket has done so far.
-#[derive(Default)]
 struct Connection {
+    /// The client's address, as `Slot` counts it.
+    ip: IpAddr,
     seat: Option<Seat>,
     failed_joins: u32,
     signals: u32,
+}
+
+impl From<IpAddr> for Connection {
+    fn from(ip: IpAddr) -> Self {
+        Connection {
+            ip,
+            seat: None,
+            failed_joins: 0,
+            signals: 0,
+        }
+    }
 }
 
 impl Connection {
@@ -184,10 +209,14 @@ impl Connection {
             ClientMessage::Create { .. } | ClientMessage::Join { .. } if self.seat.is_some() => {
                 reply(ServerMessage::error(Reason::AlreadyInRoom))
             }
+            // A full liaison asks outpost for nothing: the relay would go unused.
+            ClientMessage::Create { .. } if shared.rooms.is_full() => {
+                reply(ServerMessage::error(Reason::ServerBusy))
+            }
             ClientMessage::Create { build } => {
                 match shared
                     .rooms
-                    .create(build, relay(&shared.config).await, outbox)
+                    .create(build, relay(shared, self.ip).await, outbox)
                 {
                     Ok(seat) => self.seat = Some(seat),
                     Err(refusal) => reply(refusal),

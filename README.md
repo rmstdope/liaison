@@ -70,7 +70,10 @@ Host                         liaison                          Joiner
 Both browsers get the same entry. They can then connect through
 [outpost](https://github.com/rmstdope/outpost) when their networks cannot connect directly.
 liaison asks outpost for it once, on `create`. If outpost does not answer within a second, or
-refuses, the field is left out and the room works as before, for direct connections only.
+refuses, the field is left out and the room works as before, for direct connections only. A full
+liaison asks for nothing. Each relay is a room on outpost, which opens only a limited number for
+everyone, so a client address gets a limited number of relays (see Limits). An attacker with
+many addresses can still use up outpost's rooms for a while; outpost's own limits bound that.
 
 A room holds two browsers and ends when either leaves; a host whose joiner went away creates a new
 room. After a **final** message liaison closes the WebSocket.
@@ -99,6 +102,7 @@ room. After a **final** message liaison closes the WebSocket.
 | Message size | 16 KiB (larger closes the WebSocket) |
 | Joins to unknown rooms per WebSocket | 5 |
 | `signal` messages per WebSocket | 200 |
+| Relays per client address | 3 at once, one more every 10 s; beyond that rooms open without one |
 
 Room codes are six characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no `I`, `O`, `0` or `1`),
 shown as `ABC-DEF`.

@@ -56,6 +56,11 @@ impl Rooms {
         }
     }
 
+    /// Whether no more rooms can be opened now.
+    pub fn is_full(&self) -> bool {
+        self.table.lock().unwrap().rooms.len() >= self.max_rooms
+    }
+
     /// Opens a room hosted by `outbox`, tells it the code, and expires the room after its lifetime.
     pub fn create(
         self: &Arc<Self>,

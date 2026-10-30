@@ -642,3 +642,50 @@ async fn a_room_opens_without_a_relay_when_outpost_cannot_give_one() {
         assert_eq!(joiner.recv().await, json!({"type": "joined"}), "{url}");
     }
 }
+
+#[tokio::test]
+async fn a_full_liaison_does_not_ask_outpost_for_rooms_it_cannot_open() {
+    let (url, asked) = fake_outpost(200, ICE_SERVER, Duration::ZERO).await;
+    let addr = start(Config {
+        outpost_url: Some(url),
+        max_rooms: 1,
+        ..config()
+    })
+    .await;
+    let (_host, _) = host(addr).await;
+    let mut refused = connect(addr).await;
+    for _ in 0..20 {
+        refused
+            .send(json!({"type": "create", "build": build()}))
+            .await;
+        assert_eq!(refused.recv().await, error("server-busy"));
+    }
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn one_address_gets_a_limited_number_of_relays_and_rooms_open_without_more() {
+    let (url, asked) = fake_outpost(200, ICE_SERVER, Duration::ZERO).await;
+    let addr = start(Config {
+        outpost_url: Some(url),
+        relays_per_address: liaison::Rate {
+            per_second: 0.0,
+            burst: 3.0,
+        },
+        ..config()
+    })
+    .await;
+    // Each room on a new connection, as a client churning connections would.
+    for n in 0..5 {
+        let mut host = connect(addr).await;
+        host.send(json!({"type": "create", "build": build()})).await;
+        let created = host.recv().await;
+        assert_eq!(created["type"], "created");
+        assert_eq!(
+            created.get("iceServers").is_some(),
+            n < 3,
+            "room {n}: {created}"
+        );
+    }
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
+}

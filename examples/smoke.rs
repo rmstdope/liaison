@@ -53,7 +53,21 @@ async fn main() {
         json!({"type": "join", "room": room, "build": build}),
     )
     .await;
-    assert_eq!(recv(&mut joiner).await, json!({"type": "joined"}));
+    // A relay is there when outpost answers, as in production, and left out otherwise.
+    let joined = recv(&mut joiner).await;
+    assert_eq!(joined["type"], "joined");
+    assert_eq!(
+        joined.get("iceServers"),
+        created.get("iceServers"),
+        "the same relay for both"
+    );
+    if let Some(servers) = joined.get("iceServers") {
+        assert!(
+            servers[0]["urls"].is_array(),
+            "a relay with urls: {servers}"
+        );
+        println!("relay: {}", servers[0]["urls"]);
+    }
     assert_eq!(recv(&mut host).await, json!({"type": "peer-joined"}));
 
     send(&mut host, json!({"type": "signal", "data": "offer"})).await;
