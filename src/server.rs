@@ -137,7 +137,7 @@ async fn connection(mut socket: WebSocket, shared: Arc<Shared>, _slot: Slot) {
     loop {
         tokio::select! {
             incoming = socket.recv() => match incoming {
-                Some(Ok(Message::Text(text))) => state.handle(&shared, &outbox, text.as_str()),
+                Some(Ok(Message::Text(text))) => state.handle(&shared, &outbox, text.as_str()).await,
                 Some(Ok(Message::Binary(_))) => {
                     let _ = outbox.send(ServerMessage::error(Reason::BadMessage));
                 }
@@ -158,6 +158,12 @@ async fn connection(mut socket: WebSocket, shared: Arc<Shared>, _slot: Slot) {
     let _ = socket.send(Message::Close(None)).await;
 }
 
+/// The relay for a new room, if outpost gives one in time.
+async fn relay(config: &Config) -> Option<serde_json::Value> {
+    let url = config.outpost_url.as_deref()?;
+    crate::outpost::ice_servers(url, config.outpost_timeout).await
+}
+
 /// What one WebSocket has done so far.
 #[derive(Default)]
 struct Connection {
@@ -167,7 +173,7 @@ struct Connection {
 }
 
 impl Connection {
-    fn handle(&mut self, shared: &Shared, outbox: &Outbox, text: &str) {
+    async fn handle(&mut self, shared: &Arc<Shared>, outbox: &Outbox, text: &str) {
         let reply = |message| {
             let _ = outbox.send(message);
         };
@@ -178,10 +184,15 @@ impl Connection {
             ClientMessage::Create { .. } | ClientMessage::Join { .. } if self.seat.is_some() => {
                 reply(ServerMessage::error(Reason::AlreadyInRoom))
             }
-            ClientMessage::Create { build } => match shared.rooms.create(build, outbox) {
-                Ok(seat) => self.seat = Some(seat),
-                Err(refusal) => reply(refusal),
-            },
+            ClientMessage::Create { build } => {
+                match shared
+                    .rooms
+                    .create(build, relay(&shared.config).await, outbox)
+                {
+                    Ok(seat) => self.seat = Some(seat),
+                    Err(refusal) => reply(refusal),
+                }
+            }
             ClientMessage::Join { room, build } => match shared.rooms.join(&room, build, outbox) {
                 Ok(seat) => self.seat = Some(seat),
                 Err(ServerMessage::Error {

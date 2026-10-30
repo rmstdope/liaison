@@ -18,6 +18,7 @@ const WAIT: Duration = Duration::from_secs(2);
 fn config() -> Config {
     Config {
         allowed_origins: vec![ORIGIN.to_string()],
+        outpost_url: None,
         ..Config::default()
     }
 }
@@ -526,5 +527,118 @@ mod http {
             serde_json::from_slice::<Value>(&body).unwrap(),
             json!({"revision": revision})
         );
+    }
+}
+
+/// A stand-in for outpost's `POST /rooms`: answers each request after `delay` with `status` and
+/// `body`, and counts the requests.
+async fn fake_outpost(
+    status: u16,
+    body: &'static str,
+    delay: Duration,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::http::StatusCode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let asked = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = asked.clone();
+    let rooms = axum::Router::new().route(
+        "/rooms",
+        axum::routing::post(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(delay).await;
+                (
+                    StatusCode::from_u16(status).unwrap(),
+                    [("content-type", "application/json")],
+                    body,
+                )
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, rooms).await.unwrap() });
+    (format!("http://{addr}/rooms"), asked)
+}
+
+const ICE_SERVER: &str = r#"{"urls":["turn:203.0.113.1:3478?transport=udp","turn:203.0.113.1:3478?transport=tcp"],"username":"u","credential":"c"}"#;
+
+#[tokio::test]
+async fn both_players_get_the_rooms_relay_from_one_outpost_room() {
+    let (url, asked) = fake_outpost(200, ICE_SERVER, Duration::ZERO).await;
+    let addr = start(Config {
+        outpost_url: Some(url),
+        ..config()
+    })
+    .await;
+    let mut host = connect(addr).await;
+    host.send(json!({"type": "create", "build": build()})).await;
+    let created = host.recv().await;
+    let entry: Value = serde_json::from_str(ICE_SERVER).unwrap();
+    assert_eq!(created["iceServers"], json!([entry]));
+
+    let mut joiner = connect(addr).await;
+    joiner
+        .send(json!({"type": "join", "room": created["room"], "build": build()}))
+        .await;
+    assert_eq!(
+        joiner.recv().await,
+        json!({"type": "joined", "iceServers": [entry]})
+    );
+    assert_eq!(host.recv().await, json!({"type": "peer-joined"}));
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one room per game"
+    );
+}
+
+#[tokio::test]
+async fn a_room_opens_without_a_relay_when_outpost_cannot_give_one() {
+    let unreachable = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        format!("http://{}/rooms", listener.local_addr().unwrap())
+    };
+    let cases = [
+        fake_outpost(429, "rooms are being opened too fast", Duration::ZERO)
+            .await
+            .0,
+        // A refusal is a refusal, whatever its body says.
+        fake_outpost(503, ICE_SERVER, Duration::ZERO).await.0,
+        fake_outpost(200, "not json", Duration::ZERO).await.0,
+        fake_outpost(200, r#"["not", "an", "object"]"#, Duration::ZERO)
+            .await
+            .0,
+        fake_outpost(200, r#"{"username":"no urls"}"#, Duration::ZERO)
+            .await
+            .0,
+        fake_outpost(200, ICE_SERVER, Duration::from_secs(5))
+            .await
+            .0,
+        unreachable,
+    ];
+    for url in cases {
+        let addr = start(Config {
+            outpost_url: Some(url.clone()),
+            ..config()
+        })
+        .await;
+        let started = std::time::Instant::now();
+        let mut host = connect(addr).await;
+        host.send(json!({"type": "create", "build": build()})).await;
+        let created = host.recv().await;
+        assert_eq!(created["type"], "created", "{url}");
+        assert!(created.get("iceServers").is_none(), "{url}: {created}");
+        assert!(
+            started.elapsed() < Duration::from_millis(1800),
+            "{url}: waited too long"
+        );
+
+        let mut joiner = connect(addr).await;
+        joiner
+            .send(json!({"type": "join", "room": created["room"], "build": build()}))
+            .await;
+        assert_eq!(joiner.recv().await, json!({"type": "joined"}), "{url}");
     }
 }

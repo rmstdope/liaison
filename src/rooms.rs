@@ -31,6 +31,8 @@ struct Room {
     host: Outbox,
     joiner: Option<Outbox>,
     expiry: AbortHandle,
+    /// The relay both players are given.
+    ice_servers: Option<Value>,
 }
 
 #[derive(Default)]
@@ -55,7 +57,12 @@ impl Rooms {
     }
 
     /// Opens a room hosted by `outbox`, tells it the code, and expires the room after its lifetime.
-    pub fn create(self: &Arc<Self>, build: Build, outbox: &Outbox) -> Result<Seat, ServerMessage> {
+    pub fn create(
+        self: &Arc<Self>,
+        build: Build,
+        ice_servers: Option<Value>,
+        outbox: &Outbox,
+    ) -> Result<Seat, ServerMessage> {
         let mut table = self.table.lock().unwrap();
         if table.rooms.len() >= self.max_rooms {
             return Err(ServerMessage::error(Reason::ServerBusy));
@@ -86,10 +93,14 @@ impl Rooms {
             host: outbox.clone(),
             joiner: None,
             expiry,
+            ice_servers: ice_servers.clone(),
         };
         table.rooms.insert(code.clone(), room);
         tracing::info!(open = table.rooms.len(), "room opened");
-        let _ = outbox.send(ServerMessage::Created { room: code });
+        let _ = outbox.send(ServerMessage::Created {
+            room: code,
+            ice_servers,
+        });
         Ok(seat)
     }
 
@@ -109,7 +120,9 @@ impl Rooms {
             });
         }
         room.joiner = Some(outbox.clone());
-        let _ = outbox.send(ServerMessage::Joined);
+        let _ = outbox.send(ServerMessage::Joined {
+            ice_servers: room.ice_servers.clone(),
+        });
         let _ = room.host.send(ServerMessage::PeerJoined);
         Ok(Seat {
             code,
