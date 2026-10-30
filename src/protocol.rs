@@ -23,8 +23,14 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     Created {
         room: String,
+        /// The room's TURN relay, the same for both players, if outpost gave one.
+        #[serde(rename = "iceServers", skip_serializing_if = "Option::is_none")]
+        ice_servers: Option<Value>,
     },
-    Joined,
+    Joined {
+        #[serde(rename = "iceServers", skip_serializing_if = "Option::is_none")]
+        ice_servers: Option<Value>,
+    },
     PeerJoined,
     Signal {
         data: Value,

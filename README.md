@@ -20,6 +20,7 @@ cargo test                     # unit and end-to-end tests
 | `PORT` | `8080` | Port to listen on. |
 | `LIAISON_ALLOWED_ORIGINS` | `https://neser.rmstdope.eu` | Comma-separated page origins allowed to connect. `http://localhost` and `http://127.0.0.1` on any port are always allowed, for development. |
 | `LIAISON_REVISION` | `unknown` | Source commit served from `/release.json`; the image sets it at build time. |
+| `LIAISON_OUTPOST_URL` | `http://outpost-web:8081/rooms` | outpost's internal `POST /rooms`, which opens a TURN relay for each new room. Empty leaves the relay out. |
 
 ## HTTP endpoints
 
@@ -57,12 +58,22 @@ Host                         liaison                          Joiner
 
 | Message | Meaning |
 |---|---|
-| `{"type":"created","room":"ABC-DEF"}` | The room is open; show the code to the player. |
-| `{"type":"joined"}` | To the joiner: you are in the room. |
+| `{"type":"created","room":"ABC-DEF","iceServers":[…]}` | The room is open; show the code to the player. |
+| `{"type":"joined","iceServers":[…]}` | To the joiner: you are in the room. |
 | `{"type":"peer-joined"}` | To the host: someone joined; send your offer now. |
 | `{"type":"signal","data":…}` | The other browser's `data`, unchanged. |
 | `{"type":"peer-left"}` | The other browser left; the room is gone. **Final.** |
 | `{"type":"error","reason":"…"}` | See below. |
+
+`iceServers`, when present, is the room's TURN relay as `RTCPeerConnection` takes it:
+`[{"urls":["turn:…?transport=udp","turn:…?transport=tcp"],"username":"…","credential":"…"}]`.
+Both browsers get the same entry. They can then connect through
+[outpost](https://github.com/rmstdope/outpost) when their networks cannot connect directly.
+liaison asks outpost for it once, on `create`. If outpost does not answer within a second, or
+refuses, the field is left out and the room works as before, for direct connections only. A full
+liaison asks for nothing. Each relay is a room on outpost, which opens only a limited number for
+everyone, so a client address gets a limited number of relays (see Limits). An attacker with
+many addresses can still use up outpost's rooms for a while; outpost's own limits bound that.
 
 A room holds two browsers and ends when either leaves; a host whose joiner went away creates a new
 room. After a **final** message liaison closes the WebSocket.
@@ -91,6 +102,7 @@ room. After a **final** message liaison closes the WebSocket.
 | Message size | 16 KiB (larger closes the WebSocket) |
 | Joins to unknown rooms per WebSocket | 5 |
 | `signal` messages per WebSocket | 200 |
+| Relays per client address | 3 at once, one more every 10 s; beyond that rooms open without one |
 
 Room codes are six characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no `I`, `O`, `0` or `1`),
 shown as `ABC-DEF`.
