@@ -483,6 +483,24 @@ mod http {
     }
 
     #[tokio::test]
+    async fn the_root_page_says_what_liaison_is_and_links_to_neser() {
+        let response = get(config(), "/").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let page = String::from_utf8(body.to_vec()).unwrap();
+        assert!(page.contains("signaling server"), "{page}");
+        assert!(
+            page.contains(r#"href="https://neser.rmstdope.eu""#),
+            "{page}"
+        );
+    }
+
+    #[tokio::test]
     async fn health_is_ok() {
         let response = get(config(), "/healthz").await;
         assert_eq!(response.status(), StatusCode::OK);

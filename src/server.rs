@@ -8,7 +8,7 @@ use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -30,6 +30,7 @@ pub fn app(config: Config) -> Router {
         connections: Mutex::default(),
     };
     Router::new()
+        .route("/", get(|| async { Html(include_str!("index.html")) }))
         .route("/healthz", get(|| async { "ok" }))
         .route("/release.json", get(release))
         .route("/ws", get(upgrade))
