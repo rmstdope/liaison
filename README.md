@@ -25,6 +25,7 @@ cargo test                     # unit and end-to-end tests
 
 | Path | Answer |
 |---|---|
+| `GET /` | A short page saying what liaison is, linking to NESER |
 | `GET /healthz` | `200 ok` |
 | `GET /release.json` | `{"revision":"<commit>"}`, never cached |
 | `GET /ws` | WebSocket upgrade; requires an allowed `Origin` header |
